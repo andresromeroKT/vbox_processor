@@ -1,0 +1,8 @@
+mysql-connector-python
+pandas
+numpy
+python-dotenv
+exifread
+Pillow
+scikit-learn
+shapely
