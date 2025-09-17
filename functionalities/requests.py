@@ -15,28 +15,6 @@ def get_db_connection():
         database=os.getenv("DB_NAME")
     )
 
-def fetch_vbox_refes() -> pd.DataFrame:
-    mydb = get_db_connection()
-    mycursor = mydb.cursor()
-
-    query = f'''
-        SELECT 
-            refe,
-            count(*)
-        FROM data_vbox 
-        WHERE v_utc <> 'UTC time'
-        GROUP BY refe
-    '''
-
-    mycursor.execute(query)
-    myresult = mycursor.fetchall()
-    columns = [col[0] for col in mycursor.description]
-    
-    mycursor.close()
-    mydb.close()
-    
-    return pd.DataFrame(myresult, columns=columns)
-
 def fetch_vbox_data_as_dataframe(reference_code: str) -> pd.DataFrame:
     mydb = get_db_connection()
     mycursor = mydb.cursor()
@@ -44,26 +22,23 @@ def fetch_vbox_data_as_dataframe(reference_code: str) -> pd.DataFrame:
     query = '''
         SELECT 
             v_utc,
-            v_satellites,
+            latitudet,
+            longitudet,
             v_speed,
             v_heading,
             v_height,
             v_vertical,
             v_longitudinala,
             v_laterala,
-            v_longitudinalb,
-            v_lateralb,
             v_elapsedt,
             v_distancem,
             v_pordistance,
             v_date,
-            v_day,
             v_radiusot,
-            v_movingf,
-            v_movingr,
             v_vehiclew,
-            latitudet,
-            longitudet,
+            v_txphf,
+            v_txphf,
+            cliente,
             refe
         FROM data_vbox 
         WHERE refe = %s
