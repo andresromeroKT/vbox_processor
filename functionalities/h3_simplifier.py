@@ -141,17 +141,14 @@ def simplify_by_h3_cell(
     Returns one row per h3_cell (or per h3_cell+loading_status).
     """
     d = df.copy()
-
+    numeric_columns = ["v_speed", "v_heading", "centroid_lat", "centroid_lng", "v_vertical", "v_height", "v_longitudinala", "v_laterala", "v_radiusot", "v_vehiclew", "v_txphf", "v_txphr", "slope_percent"]
     # ensure numeric
-    for c in ["v_speed", "v_heading", "centroid_lat", "centroid_lng"]:
+    for c in numeric_columns:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    d = d.dropna(subset=["h3_cell", "v_speed", "v_heading"])
-
     # each row = 1s → flow_km = speed(kmh) * 1/3600 h
     d["flow_km"] = d["v_speed"] / 3600.0
-
     # group keys
     keys = ["h3_cell"] + (["loading_status"] if group_by_loadstate and "loading_status" in d.columns else [])
 
@@ -159,12 +156,20 @@ def simplify_by_h3_cell(
         d.groupby(keys, dropna=False)
          .agg(
              n_points=("h3_cell","size"),
-             avg_speed=("v_speed","mean"),
-             med_speed=("v_speed","median"),
-             mean_heading_deg=("v_heading", _circular_mean_deg),
-             sum_flow_km=("flow_km","sum"),
              centroid_lat=("centroid_lat","first"),
              centroid_lng=("centroid_lng","first"),
+             avg_heading=("v_heading", _circular_mean_deg),
+             avg_speed=("v_speed","mean"),
+             avg_vertical_speed=("v_vertical", "mean"),
+             avg_height=("v_height", "mean"),
+             avg_longitudinal_a=("v_longitudinala", "mean"),
+             avg_lateral_a=("v_laterala", "mean"),
+             avg_ratius_ot=("v_radiusot", "mean"),
+             avg_vehicle_w=("v_vehiclew", "mean"),
+             avg_tkph_f=("v_txphf", "mean"),
+             avg_tkph_r=("v_txphr", "mean"),
+             avg_slope_percent=("slope_percent", "mean"),
+             sum_flow_km=("flow_km","sum")
          )
          .reset_index()
     )
@@ -174,12 +179,21 @@ def simplify_by_h3_cell(
     f_norm = agg["sum_flow_km"] / (agg["sum_flow_km"].max() or 1.0)
     agg["transparency"] = (alpha * n_norm + (1 - alpha) * f_norm).clip(0, 1)
 
+    agg = agg.drop(columns=["sum_flow_km"])
+
     # tidy rounding
     agg = agg.round({
+        "avg_heading": 2,
         "avg_speed": 2,
-        "med_speed": 2,
-        "mean_heading_deg": 2,
-        "sum_flow_km": 6,
+        "avg_vertical_speed": 2,
+        "avg_height": 2,
+        "avg_longitudinal_a": 2,
+        "avg_lateral_a": 2,
+        "avg_ratius_ot": 2,
+        "avg_vehicle_w": 2,
+        "avg_tkph_f": 2,
+        "avg_tkph_r": 2,
+        "avg_slope_percent": 4,
         "transparency": 4
     })
 

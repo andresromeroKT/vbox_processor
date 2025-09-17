@@ -36,7 +36,7 @@ def fetch_vbox_data_as_dataframe(reference_code: str) -> pd.DataFrame:
             v_date,
             v_radiusot,
             v_vehiclew,
-            v_txphf,
+            v_txphr,
             v_txphf,
             cliente,
             refe
