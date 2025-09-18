@@ -29,7 +29,7 @@ def request_processor(reference_code: str):
     df_final = result['dataframe']
     df_final.to_csv("vbox_data_processed.csv", index=False)
 
-    # write_df_to_table(df_final, reference_code, "datavvh_simplificada")
+    write_df_to_table(df_final, reference_code, "datavvh_simplificada_v2")
     print("Datos de Referencia: " + reference_code + " procesados de manera satisfactoria")
 
 def add_slope_percent_per_100m(data: pd.DataFrame,
@@ -160,7 +160,7 @@ def simplify_by_h3_cell(
     # each row = 1s → flow_km = speed(kmh) * 1/3600 h
     d["flow_km"] = d["v_speed"] / 3600.0
     # group keys
-    keys = ["h3_cell"] + (["loading_status"] if group_by_loadstate and "loading_status" in d.columns else [])
+    keys = ["refe"] + ["h3_cell"] + (["loading_status"] if group_by_loadstate and "loading_status" in d.columns else [])
 
     agg = (
         d.groupby(keys, dropna=False)
@@ -212,9 +212,9 @@ def simplify_by_h3_cell(
 def write_df_to_table(df, reference_code, table_name):
 
     # Validate that the reference exist, in that case you CAN'T insert the data
-    if validate_reference_code(reference_code):
-        print(f"🚫 Skipping {reference_code}: Record already exists in datavvh_simplificada.")
-        return
+    # if validate_reference_code(reference_code):
+    #     print(f"🚫 Skipping {reference_code}: Record already exists in datavvh_simplificada.")
+    #     return
     
     # Create table if it doesn't exist (adjust column types as needed)
     create_table_if_dont_exist(table_name, df.columns)
@@ -242,7 +242,7 @@ def first_time_load():
 
 
 
-def add_clustering_columns_to_dataframe(df):
+def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
     """
     Toma el DataFrame original y agrega columnas con resultados de clustering y KDE
     
@@ -277,22 +277,22 @@ def add_clustering_columns_to_dataframe(df):
     # Definir las reglas
     rules_definitions = {
         'r1': {
-            'name': 'velocidad_alta',
+            'name': 'speed',
             'description': 'Velocidades > 50 km/h',
             'condition': lambda df: df['avg_speed'] > 50
         },
         'r2': {
-            'name': 'aceleracion_lateral', 
+            'name': 'lateral_ac', 
             'description': 'Aceleración lateral > ±0.15g',
             'condition': lambda df: np.abs(df['avg_lateral_a']) > 0.15
         },
         'r3': {
-            'name': 'aceleracion_longitudinal',
+            'name': 'longitudinal_ac',
             'description': 'Aceleración longitudinal > ±0.1g', 
             'condition': lambda df: np.abs(df['avg_longitudinal_a']) > 0.1
         },
         'r4': {
-            'name': 'velocidad_vertical',
+            'name': 'vertical_speed',
             'description': 'Velocidad vertical > ±3 m/s',
             'condition': lambda df: np.abs(df['avg_vertical_speed']) > 3
         }
@@ -300,10 +300,8 @@ def add_clustering_columns_to_dataframe(df):
     
     # Regla 5: Ondulaciones rápidas 
     if 'avg_vertical_speed' in df.columns:
-        ondulacion_score = (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
-        threshold_ondulacion = (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
         rules_definitions['r5'] = {
-            'name': 'ondulaciones_rapidas',
+            'name': 'speed_waviness',
             'description': f'Ondulaciones rápidas (Sver×Speed) avg_speed>50 & avg_vertical_speed',
             'condition': lambda df: (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
         }
@@ -311,7 +309,7 @@ def add_clustering_columns_to_dataframe(df):
     # Regla 6: Curvas rápidas (si existe columna avg_radius_ot)
     if 'avg_ratius_ot' in df.columns:
         rules_definitions['r6'] = {
-            'name': 'curvas_rapidas',
+            'name': 'speed_turns',
             'description': 'Curvas rápidas (velocidad excede la máxima permitida para el radio)',
             'condition': lambda df: df.apply(
                 lambda row: row['avg_speed'] > get_max_speed_from_radius(row['avg_ratius_ot']),
@@ -332,11 +330,11 @@ def add_clustering_columns_to_dataframe(df):
             print(f"   📍 Eventos críticos encontrados: {len(critical_indices)}")
             
             # Inicializar columnas con -999 (no aplica) y NaN para KDE
-            cluster_col = f'cluster_{rule_id}'
-            kde_col = f'kde_{rule_id}'
+            cluster_col = f'cluster_{rule_info["name"]}'
+            kde_col = f'kde_{rule_info["name"]}'
             
             df_result[cluster_col] = -999  # -999 = no es evento crítico para esta regla
-            df_result[kde_col] = np.nan   # NaN = no tiene densidad KDE
+            df_result[kde_col] = 0   # 0 = no tiene densidad KDE
             
             if len(critical_indices) < 5:
                 print(f"   ⚠️ Muy pocos eventos críticos para clustering (mínimo 5)")
@@ -514,6 +512,7 @@ def process_dataframe_with_clustering(df, export_coordinates=True):
     
     # Agregar columnas de clustering
     df_with_clusters = add_clustering_columns_to_dataframe(df)
+    df_with_clusters = df_with_clusters.replace(np.nan, 0)
     
     # Generar resumen
     summary = get_clustering_summary(df_with_clusters)

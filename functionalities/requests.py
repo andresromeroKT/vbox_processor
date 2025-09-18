@@ -86,6 +86,19 @@ def validate_reference_code(reference_code: str) -> bool:
     
     return count_result[0] >= 1 if count_result else False
 
+def drop_table(table_name: str) -> None:
+    mydb = get_db_connection()
+    mycursor = mydb.cursor()
+    
+    # Construir el query con seguridad (no usar f-string directo)
+    drop_query = f"DROP TABLE IF EXISTS `{table_name}`"
+    
+    mycursor.execute(drop_query)
+    mydb.commit()  # asegurarse de aplicar cambios
+    
+    mycursor.close()
+    mydb.close()
+
 def create_table_if_dont_exist(table_name: str, columns: list):
     mydb = get_db_connection()
     mycursor = mydb.cursor()
