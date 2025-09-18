@@ -309,11 +309,14 @@ def add_clustering_columns_to_dataframe(df):
         }
     
     # Regla 6: Curvas rápidas (si existe columna avg_radius_ot)
-    if 'avg_radius_ot' in df.columns:
+    if 'avg_ratius_ot' in df.columns:
         rules_definitions['r6'] = {
             'name': 'curvas_rapidas',
-            'description': 'Curvas rápidas (Speed > 50 & Radio < 50)',
-            'condition': lambda df: (df['avg_speed'] > 50) & (df['avg_radius_ot'] < 50)
+            'description': 'Curvas rápidas (velocidad excede la máxima permitida para el radio)',
+            'condition': lambda df: df.apply(
+                lambda row: row['avg_speed'] > get_max_speed_from_radius(row['avg_ratius_ot']),
+                axis=1
+            )
         }
     
     # Procesar cada regla
@@ -519,4 +522,40 @@ def process_dataframe_with_clustering(df, export_coordinates=True):
         'dataframe': df_with_clusters,
         'summary': summary, 
     }
+
+# Rango de radios (m) → Velocidad máxima (kph)
+radius_speed_ranges = [
+    (0, 15, 8),
+    (15, 20, 9),
+    (20, 25, 10),
+    (25, 32, 11),
+    (32, 37, 12),
+    (37, 42, 13),
+    (42, 49, 14),
+    (49, 53, 15),
+    (53, 58, 16),
+    (58, 63, 17),
+    (63, 68, 18),
+    (68, 73, 19),
+    (73, 79, 20),
+    (79, 84, 21),
+    (84, 90, 22),
+    (90, 96, 23),
+    (96, 106, 24),
+    (106, 113, 25),
+    (113, 120, 26),
+    (120, 132, 27),
+    (132, 141, 28),
+    (141, 150, 29),
+    (150, 160, 30),
+    (160, 170, 31),
+    (170, 198, 32)
+]
+
+def get_max_speed_from_radius(radius):
+    for r_min, r_max, vmax in radius_speed_ranges:
+        if r_min <= radius <= r_max:
+            return vmax
+    return np.inf  # si está fuera de los rangos, no marcar como crítico
+
 
