@@ -36,24 +36,17 @@ TABLE_COLUMNS = [
 def upload_to_ftp(local_path: str, remote_dir: str = FTP_REMOTE_DIR) -> str:
     """Sube un archivo al FTP y devuelve ruta remota (remote_dir/filename)."""
     filename = os.path.basename(local_path)
-    remote_path = f"{remote_dir}/{filename}"
+    remote_path = f"{filename}"
 
     ftp = FTP()
     ftp.connect(FTP_HOST, FTP_PORT, timeout=30)
     ftp.login(FTP_USER, FTP_PASSWORD)
 
-    # asegurar dir
-    try:
-        ftp.cwd(remote_dir)
-    except Exception:
-        ftp.mkd(remote_dir)
-        ftp.cwd(remote_dir)
-
     with open(local_path, "rb") as f:
         ftp.storbinary(f"STOR {filename}", f)
 
     ftp.quit()
-    return remote_path
+    return F"{remote_dir}/{remote_path}"
 
 def get_decimal_coords(tags):
     """Convierte EXIF a (lat, lon) decimales o (None, None)."""
@@ -75,7 +68,7 @@ def get_decimal_coords(tags):
         if gps_longitude_ref != "E":
             lon = -lon
 
-        return round(lat, 6), round(lon, 6)
+        return round(lat, 8), round(lon, 8)
     except KeyError:
         return None, None
 
