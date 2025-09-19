@@ -51,7 +51,7 @@ def request_processor(reference_code: str):
         
         # Step 3: Write to database
         logger.info("Writing processed data to database...")
-        write_df_to_table(df_final, reference_code, "datavvh_simplificada_2")
+        write_df_to_table(df_final, reference_code, "datavvh_simplificada_v2")
         
         logger.info(f"Successfully processed reference: {reference_code}")
         return True
@@ -72,7 +72,9 @@ def write_df_to_table(df, reference_code, table_name):
         
         # Create table if it doesn't exist
         create_table_if_dont_exist(table_name, df.columns)
-        
+
+        df['refe'] = reference_code
+
         # Insert data
         insert_df_to_table(df, table_name)
         
@@ -253,8 +255,13 @@ def add_clustering_columns_to_dataframe(df):
     """
     Add clustering and KDE columns to DataFrame
     """
-    logger.info("Adding clustering columns to dataframe")
     df_result = df.copy()
+    logger.info("Adding clustering columns to dataframe")
+    if 'avg_ratius_ot' in df_result.columns:
+        df_result['avg_ratius_ot'] = df_result['avg_ratius_ot'].fillna(1000)
+    
+    # Después llenar todos los demás NaN con 0
+    df_result = df_result.fillna(0)    
     
     required_columns = ['centroid_lat', 'centroid_lng', 'avg_speed', 'avg_lateral_a', 
                        'avg_longitudinal_a', 'avg_vertical_speed']
@@ -318,7 +325,7 @@ def add_clustering_columns_to_dataframe(df):
             kde_col = f'kde_{rule_info["name"]}'
             
             df_result[cluster_col] = -999
-            df_result[kde_col] = np.nan
+            df_result[kde_col] = 0.0
             
             if len(critical_indices) < 5:
                 logger.warning(f"Too few critical events for rule {rule_id}")
@@ -358,11 +365,15 @@ def add_clustering_columns_to_dataframe(df):
                     kde = KernelDensity(bandwidth=0.003, kernel='epanechnikov')
                     kde.fit(clustered_coords)
                     
-                    kde_scores = kde.score_samples(coords_array)
+                    all_coords = df_result[['centroid_lat', 'centroid_lng']].dropna()
+                    all_valid_indices = all_coords.index
+                    all_coords_array = all_coords.values
+
+                    kde_scores = kde.score_samples(all_coords_array)
                     kde_density = np.exp(kde_scores)
                     probs = kde_density / kde_density.sum()
                     
-                    df_result.loc[valid_indices, kde_col] = probs
+                    df_result.loc[all_valid_indices, kde_col] = probs
                     
                 except Exception as kde_error:
                     logger.warning(f"KDE error for rule {rule_id}: {kde_error}")

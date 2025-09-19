@@ -7,7 +7,7 @@ url = "https://lka5yy6ij6.execute-api.us-east-1.amazonaws.com/default/ProcessVbo
 # Test simple
 response = requests.post(
     url,
-    json={"reference_code": "773761VBOX"},
+    json={"reference_code": "494814VBOX"},
     headers={"Content-Type": "application/json"},
     timeout=900
 )
