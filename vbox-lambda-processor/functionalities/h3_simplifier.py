@@ -267,22 +267,22 @@ def add_clustering_columns_to_dataframe(df):
     # Define clustering rules
     rules_definitions = {
         'r1': {
-            'name': 'velocidad_alta',
+            'name': 'speed',
             'description': 'Velocidades > 50 km/h',
             'condition': lambda df: df['avg_speed'] > 50
         },
         'r2': {
-            'name': 'aceleracion_lateral', 
+            'name': 'lateral_ac', 
             'description': 'Aceleración lateral > ±0.15g',
             'condition': lambda df: np.abs(df['avg_lateral_a']) > 0.15
         },
         'r3': {
-            'name': 'aceleracion_longitudinal',
+            'name': 'longitudinal_ac',
             'description': 'Aceleración longitudinal > ±0.1g', 
             'condition': lambda df: np.abs(df['avg_longitudinal_a']) > 0.1
         },
         'r4': {
-            'name': 'velocidad_vertical',
+            'name': 'vertical_speed',
             'description': 'Velocidad vertical > ±3 m/s',
             'condition': lambda df: np.abs(df['avg_vertical_speed']) > 3
         }
@@ -291,14 +291,14 @@ def add_clustering_columns_to_dataframe(df):
     # Add rules 5 and 6 if columns exist
     if 'avg_vertical_speed' in df.columns:
         rules_definitions['r5'] = {
-            'name': 'ondulaciones_rapidas',
+            'name': 'speed_waviness',
             'description': 'Ondulaciones rápidas',
             'condition': lambda df: (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
         }
     
     if 'avg_ratius_ot' in df.columns:
         rules_definitions['r6'] = {
-            'name': 'curvas_rapidas',
+            'name': 'speed_turns',
             'description': 'Curvas rápidas',
             'condition': lambda df: df.apply(
                 lambda row: row['avg_speed'] > get_max_speed_from_radius(row['avg_ratius_ot']),
@@ -314,8 +314,8 @@ def add_clustering_columns_to_dataframe(df):
             critical_mask = rule_info['condition'](df_result)
             critical_indices = df_result[critical_mask].index
             
-            cluster_col = f'cluster_{rule_id}'
-            kde_col = f'kde_{rule_id}'
+            cluster_col = f'cluster_{rule_info["name"]}'
+            kde_col = f'kde_{rule_info["name"]}'
             
             df_result[cluster_col] = -999
             df_result[kde_col] = np.nan

@@ -237,7 +237,7 @@ def first_time_load():
 
 
 
-def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
+def add_clustering_columns_to_dataframe(df):
     """
     Toma el DataFrame original y agrega columnas con resultados de clustering y KDE
     
@@ -272,22 +272,22 @@ def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
     # Definir las reglas
     rules_definitions = {
         'r1': {
-            'name': 'speed',
+            'name': 'velocidad_alta',
             'description': 'Velocidades > 50 km/h',
             'condition': lambda df: df['avg_speed'] > 50
         },
         'r2': {
-            'name': 'lateral_ac', 
+            'name': 'aceleracion_lateral', 
             'description': 'Aceleración lateral > ±0.15g',
             'condition': lambda df: np.abs(df['avg_lateral_a']) > 0.15
         },
         'r3': {
-            'name': 'longitudinal_ac',
+            'name': 'aceleracion_longitudinal',
             'description': 'Aceleración longitudinal > ±0.1g', 
             'condition': lambda df: np.abs(df['avg_longitudinal_a']) > 0.1
         },
         'r4': {
-            'name': 'vertical_speed',
+            'name': 'velocidad_vertical',
             'description': 'Velocidad vertical > ±3 m/s',
             'condition': lambda df: np.abs(df['avg_vertical_speed']) > 3
         }
@@ -295,8 +295,10 @@ def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
     
     # Regla 5: Ondulaciones rápidas 
     if 'avg_vertical_speed' in df.columns:
+        ondulacion_score = (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
+        threshold_ondulacion = (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
         rules_definitions['r5'] = {
-            'name': 'speed_waviness',
+            'name': 'ondulaciones_rapidas',
             'description': f'Ondulaciones rápidas (Sver×Speed) avg_speed>50 & avg_vertical_speed',
             'condition': lambda df: (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
         }
@@ -304,13 +306,17 @@ def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
     # Regla 6: Curvas rápidas (si existe columna avg_radius_ot)
     if 'avg_ratius_ot' in df.columns:
         rules_definitions['r6'] = {
-            'name': 'speed_turns',
+            'name': 'curvas_rapidas',
             'description': 'Curvas rápidas (velocidad excede la máxima permitida para el radio)',
             'condition': lambda df: df.apply(
                 lambda row: row['avg_speed'] > get_max_speed_from_radius(row['avg_ratius_ot']),
                 axis=1
             )
         }
+
+    all_coords = df_result[['centroid_lat', 'centroid_lng']].dropna()
+    all_indices = all_coords.index
+    all_coords_array = all_coords.values        
     
     # Procesar cada regla
     for rule_id, rule_info in rules_definitions.items():
@@ -325,11 +331,11 @@ def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
             print(f"   📍 Eventos críticos encontrados: {len(critical_indices)}")
             
             # Inicializar columnas con -999 (no aplica) y NaN para KDE
-            cluster_col = f'cluster_{rule_info["name"]}'
-            kde_col = f'kde_{rule_info["name"]}'
+            cluster_col = f'cluster_{rule_id}'
+            kde_col = f'kde_{rule_id}'
             
             df_result[cluster_col] = -999  # -999 = no es evento crítico para esta regla
-            df_result[kde_col] = 0   # 0 = no tiene densidad KDE
+            df_result[kde_col] = 0.0    # NaN = no tiene densidad KDE
             
             if len(critical_indices) < 5:
                 print(f"   ⚠️ Muy pocos eventos críticos para clustering (mínimo 5)")
@@ -384,12 +390,12 @@ def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
                     kde.fit(clustered_coords)
                     
                     # Calcular densidad KDE para todos los eventos críticos
-                    kde_scores = kde.score_samples(coords_array)
+                    kde_scores = kde.score_samples(all_coords_array)
                     kde_density = np.exp(kde_scores)
                     probs = kde_density / kde_density.sum()
                     
                     # Asignar densidades KDE
-                    df_result.loc[valid_indices, kde_col] = probs
+                    df_result.loc[all_indices, kde_col] = probs
                     
                     print(f"   📊 KDE calculado para {len(valid_indices)} puntos")
                     print(f"   📈 Densidad máxima: {kde_density.max():.6f}")
