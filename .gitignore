@@ -2,3 +2,4 @@
 /image_data_test
 .env
 /env
+__pycache__/

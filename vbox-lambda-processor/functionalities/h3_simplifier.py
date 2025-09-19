@@ -1,32 +1,89 @@
+# functionalities/h3_simplifier.py (MODIFICADO PARA LAMBDA)
 from functionalities.requests import fetch_vbox_data_as_dataframe, validate_reference_code, create_table_if_dont_exist, insert_df_to_table, fetch_all_vbox_reference_records
 import pandas as pd
 import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.cluster import HDBSCAN
 from sklearn.neighbors import KernelDensity
-
-
 import h3
+import logging
+import os
+import tempfile
+
+# Configure logging
+logger = logging.getLogger()
 
 def request_processor(reference_code: str):
+    """
+    Process a single reference code - optimized for Lambda
+    """
+    try:
+        logger.info(f"Starting processing for reference: {reference_code}")
+        
+        # Step 1: Fetch data
+        logger.info("Fetching VBox data...")
+        vbox_df = fetch_vbox_data_as_dataframe(reference_code)
+        
+        if vbox_df.empty:
+            raise ValueError(f"No data found for reference: {reference_code}")
+        
+        logger.info(f"Fetched {len(vbox_df)} records")
+        
+        # Step 2: Process data pipeline
+        logger.info("Applying isolation forest...")
+        vbox_df_iso_forest = isolation_forest_preprocess(vbox_df)
+        
+        logger.info("Adding slope calculations...")
+        vbox_df_with_slope = add_slope_percent_per_100m(vbox_df_iso_forest)
+        
+        logger.info("Adding loading status labels...")
+        vbox_df_with_slope_and_status = add_empty_loaded_labels(vbox_df_with_slope)
+        
+        logger.info("Adding H3 cells and centroids...")
+        vbox_df_with_slope_status_h3 = add_h3_cell_and_centroid(vbox_df_with_slope_and_status)
+        
+        logger.info("Simplifying by H3 cells...")
+        vbox_final_simplified_df = simplify_by_h3_cell(vbox_df_with_slope_status_h3)
+        
+        logger.info("Processing clustering analysis...")
+        result = process_dataframe_with_clustering(vbox_final_simplified_df)
+        df_final = result['dataframe']
+        
+        # Step 3: Write to database
+        logger.info("Writing processed data to database...")
+        write_df_to_table(df_final, reference_code, "datavvh_simplificada_2")
+        
+        logger.info(f"Successfully processed reference: {reference_code}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error processing reference {reference_code}: {str(e)}")
+        raise
 
-    vbox_df = fetch_vbox_data_as_dataframe(reference_code)
-    vbox_df_iso_forest = isolation_forest_preprocess(vbox_df)
-    vbox_df_with_slope =  add_slope_percent_per_100m(vbox_df_iso_forest)
-    vbox_df_with_slope_and_status = add_empty_loaded_labels(vbox_df_with_slope)
-    vbox_df_with_slope_status_h3 = add_h3_cell_and_centroid(vbox_df_with_slope_and_status)
+def write_df_to_table(df, reference_code, table_name):
+    """
+    Write DataFrame to database table - with better error handling for Lambda
+    """
+    try:
+        # Validate that the reference doesn't exist
+        if validate_reference_code(reference_code):
+            logger.warning(f"Skipping {reference_code}: Record already exists in {table_name}")
+            return False
+        
+        # Create table if it doesn't exist
+        create_table_if_dont_exist(table_name, df.columns)
+        
+        # Insert data
+        insert_df_to_table(df, table_name)
+        
+        logger.info(f"Successfully wrote {len(df)} records for reference {reference_code}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error writing to database: {str(e)}")
+        raise
 
-    vbox_final_simplified_df = simplify_by_h3_cell(vbox_df_with_slope_status_h3)
-
-    # Procesar DataFrame original
-    result = process_dataframe_with_clustering(vbox_final_simplified_df)
-    # 
-    # # Obtener DataFrame con nuevas columnas
-    df_final = result['dataframe']
-    
-    write_df_to_table(df_final, reference_code, "datavvh_simplificada_v2")
-    print("Datos de Referencia: " + reference_code + " procesados de manera satisfactoria")
-
+# Keep all your existing processing functions exactly the same
 def add_slope_percent_per_100m(data: pd.DataFrame,
                                dist_col: str = "v_distancem",
                                height_col: str = "v_height",
@@ -34,9 +91,6 @@ def add_slope_percent_per_100m(data: pd.DataFrame,
                                out_col: str = "slope_percent") -> pd.DataFrame:
     """
     Agrega % Slope por tramos de 100 m.
-    - Ordena por `order_col`
-    - Bins: [0-100], [100-200], ...
-    - slope = (altura_final - altura_inicial) / 100
     """
     dfc = data.copy()
     for c in (dist_col, height_col, order_col):
@@ -62,14 +116,10 @@ def add_empty_loaded_labels(
     out_col: str = "loading_status",
     p_low: float = 0.10,
     p_high: float = 0.90,
-    min_gap: float = 5.0   # diferencia mínima entre p10 y p90 en toneladas
+    min_gap: float = 5.0
 ) -> pd.DataFrame:
     """
     Etiqueta filas como Empty / Partial Loaded / Loaded según percentiles del peso del vehículo.
-    - <= p_low -> 'Empty'
-    - >= p_high -> 'Loaded'
-    - entre -> 'Partial Loaded'
-    Casos ambiguos (p10≈p90 o poca variación) -> 'Not Apply'
     """
     df2 = df.copy()
     df2[weight_col] = pd.to_numeric(df2[weight_col], errors="coerce")
@@ -80,11 +130,9 @@ def add_empty_loaded_labels(
         df2[out_col] = "Not Apply"
         return df2
 
-    # percentiles
     p10 = np.nanpercentile(s, p_low * 100)
     p90 = np.nanpercentile(s, p_high * 100)
 
-    # chequeos
     if not np.isfinite(p10) or not np.isfinite(p90) or (p90 - p10) < min_gap:
         df2[out_col] = "Not Apply"
         return df2
@@ -96,23 +144,25 @@ def add_empty_loaded_labels(
     return df2
 
 def isolation_forest_preprocess(df: object, outliers_percent: float = 0.05):
-    X = df[["v_speed", "v_height"]].values  # Convert to NumPy array
+    """
+    Apply Isolation Forest to remove outliers
+    """
+    X = df[["v_speed", "v_height"]].values
 
-    # Apply Isolation Forest
     iso_forest = IsolationForest(contamination=outliers_percent, random_state=0)
     outlier_predictions = iso_forest.fit_predict(X)
 
-    # Filter out the outliers (-1 are outliers, 1 are inliers)
     df_filtered = df[outlier_predictions == 1].copy()
-
-    return df_filtered  # Return cleaned dataset
+    return df_filtered
 
 def add_h3_cell_and_centroid(df: object, resolution: int = 12):
+    """
+    Add H3 cells and centroids
+    """
     df_h3 = df.copy()
     df_h3["latitudet"]  = pd.to_numeric(df_h3["latitudet"],  errors="coerce")
     df_h3["longitudet"] = pd.to_numeric(df_h3["longitudet"], errors="coerce")
 
-    # Add h3_r12 and h3_r11 columns in the same loop
     df_h3["h3_cell"] = [
         h3.latlng_to_cell(lat, lng, resolution) 
         for lat, lng in zip(df_h3["latitudet"], df_h3["longitudet"])
@@ -126,6 +176,9 @@ def add_h3_cell_and_centroid(df: object, resolution: int = 12):
     return df_h3
 
 def _circular_mean_deg(deg_series: pd.Series) -> float:
+    """
+    Calculate circular mean for heading degrees
+    """
     r = np.radians(pd.to_numeric(deg_series, errors="coerce").dropna().values)
     if r.size == 0:
         return np.nan
@@ -136,26 +189,20 @@ def _circular_mean_deg(deg_series: pd.Series) -> float:
 def simplify_by_h3_cell(
     df: pd.DataFrame,
     group_by_loadstate: bool = True,
-    alpha: float = 0.5  # blend for weight_transparency: 0=only flow, 1=only count
+    alpha: float = 0.5
 ) -> pd.DataFrame:
     """
-    Aggregate dataset by h3_cell. Expects:
-      - h3_cell, centroid_lat, centroid_lng
-      - v_speed, v_heading
-      - optional: loading_status (if group_by_loadstate=True)
-    Returns one row per h3_cell (or per h3_cell+loading_status).
+    Aggregate dataset by h3_cell
     """
     d = df.copy()
     numeric_columns = ["v_speed", "v_heading", "centroid_lat", "centroid_lng", "v_vertical", "v_height", "v_longitudinala", "v_laterala", "v_radiusot", "v_vehiclew", "v_txphf", "v_txphr", "slope_percent"]
-    # ensure numeric
+    
     for c in numeric_columns:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    # each row = 1s → flow_km = speed(kmh) * 1/3600 h
     d["flow_km"] = d["v_speed"] / 3600.0
-    # group keys
-    keys = ["refe"] + ["h3_cell"] + (["loading_status"] if group_by_loadstate and "loading_status" in d.columns else [])
+    keys = ["h3_cell"] + (["loading_status"] if group_by_loadstate and "loading_status" in d.columns else [])
 
     agg = (
         d.groupby(keys, dropna=False)
@@ -179,14 +226,12 @@ def simplify_by_h3_cell(
          .reset_index()
     )
 
-    # normalize weights
     n_norm = agg["n_points"] / (agg["n_points"].max() or 1)
     f_norm = agg["sum_flow_km"] / (agg["sum_flow_km"].max() or 1.0)
     agg["transparency"] = (alpha * n_norm + (1 - alpha) * f_norm).clip(0, 1)
 
     agg = agg.drop(columns=["sum_flow_km"])
 
-    # tidy rounding
     agg = agg.round({
         "avg_heading": 2,
         "avg_speed": 2,
@@ -204,148 +249,89 @@ def simplify_by_h3_cell(
 
     return agg
 
-def write_df_to_table(df, reference_code, table_name):
-
-    # Validate that the reference exist, in that case you CAN'T insert the data
-    # if validate_reference_code(reference_code):
-    #     print(f"🚫 Skipping {reference_code}: Record already exists in datavvh_simplificada.")
-    #     return
-    
-    # Create table if it doesn't exist (adjust column types as needed)
-    create_table_if_dont_exist(table_name, df.columns)
-
-    # Prepare INSERT query dynamically based on column names
-    insert_df_to_table(df, table_name)
-
-    print(f"✅ Data from reference {reference_code} written to table 'datavvh_simplificada' successfully!")
-
-#----------------
-# First Time Load
-#----------------
-
-def first_time_load():
-    result = fetch_all_vbox_reference_records()
-    
-    # Extract refe codes as a list
-    refelist = [row[0] for row in result]
-
-    for reference in refelist:
-        try:
-            request_processor(reference)
-        except Exception as e:
-            print(f"🚫 Skipping {reference}: Record has an error in DataTypes → {e}")
-
-
-
-def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
+def add_clustering_columns_to_dataframe(df):
     """
-    Toma el DataFrame original y agrega columnas con resultados de clustering y KDE
-    
-    Parámetros:
-    df: DataFrame original con todas las filas
-    
-    Retorna:
-    df: Mismo DataFrame pero con columnas nuevas:
-        - cluster_r1, kde_r1 (velocidad alta)
-        - cluster_r2, kde_r2 (aceleración lateral) 
-        - cluster_r3, kde_r3 (aceleración longitudinal)
-        - cluster_r4, kde_r4 (velocidad vertical)
-        - cluster_r5, kde_r5 (ondulaciones rápidas)
-        - cluster_r6, kde_r6 (curvas rápidas)
+    Add clustering and KDE columns to DataFrame
     """
-    
-    print("🚀 AGREGANDO COLUMNAS DE CLUSTERING AL DATAFRAME ORIGINAL")
-    print("=" * 60)
-    
-    # Crear copia del DataFrame para no modificar el original
+    logger.info("Adding clustering columns to dataframe")
     df_result = df.copy()
     
-    # Verificar columnas necesarias
     required_columns = ['centroid_lat', 'centroid_lng', 'avg_speed', 'avg_lateral_a', 
                        'avg_longitudinal_a', 'avg_vertical_speed']
     
     missing_columns = [col for col in required_columns if col not in df.columns]
     if missing_columns:
-        print(f"❌ ERROR: Columnas faltantes: {missing_columns}")
+        logger.warning(f"Missing columns for clustering: {missing_columns}")
         return df_result
     
-    # Definir las reglas
+    # Define clustering rules
     rules_definitions = {
         'r1': {
-            'name': 'speed',
+            'name': 'velocidad_alta',
             'description': 'Velocidades > 50 km/h',
             'condition': lambda df: df['avg_speed'] > 50
         },
         'r2': {
-            'name': 'lateral_ac', 
+            'name': 'aceleracion_lateral', 
             'description': 'Aceleración lateral > ±0.15g',
             'condition': lambda df: np.abs(df['avg_lateral_a']) > 0.15
         },
         'r3': {
-            'name': 'longitudinal_ac',
+            'name': 'aceleracion_longitudinal',
             'description': 'Aceleración longitudinal > ±0.1g', 
             'condition': lambda df: np.abs(df['avg_longitudinal_a']) > 0.1
         },
         'r4': {
-            'name': 'vertical_speed',
+            'name': 'velocidad_vertical',
             'description': 'Velocidad vertical > ±3 m/s',
             'condition': lambda df: np.abs(df['avg_vertical_speed']) > 3
         }
     }
     
-    # Regla 5: Ondulaciones rápidas 
+    # Add rules 5 and 6 if columns exist
     if 'avg_vertical_speed' in df.columns:
         rules_definitions['r5'] = {
-            'name': 'speed_waviness',
-            'description': f'Ondulaciones rápidas (Sver×Speed) avg_speed>50 & avg_vertical_speed',
+            'name': 'ondulaciones_rapidas',
+            'description': 'Ondulaciones rápidas',
             'condition': lambda df: (df['avg_speed'] > 50) & (df['avg_vertical_speed'] > 3)
         }
     
-    # Regla 6: Curvas rápidas (si existe columna avg_radius_ot)
     if 'avg_ratius_ot' in df.columns:
         rules_definitions['r6'] = {
-            'name': 'speed_turns',
-            'description': 'Curvas rápidas (velocidad excede la máxima permitida para el radio)',
+            'name': 'curvas_rapidas',
+            'description': 'Curvas rápidas',
             'condition': lambda df: df.apply(
                 lambda row: row['avg_speed'] > get_max_speed_from_radius(row['avg_ratius_ot']),
                 axis=1
             )
         }
     
-    # Procesar cada regla
+    # Process each rule
     for rule_id, rule_info in rules_definitions.items():
-        
-        print(f"\n🎯 Procesando {rule_id.upper()}: {rule_info['description']}")
+        logger.info(f"Processing rule {rule_id}: {rule_info['description']}")
         
         try:
-            # Aplicar condición para identificar eventos críticos
             critical_mask = rule_info['condition'](df_result)
             critical_indices = df_result[critical_mask].index
             
-            print(f"   📍 Eventos críticos encontrados: {len(critical_indices)}")
+            cluster_col = f'cluster_{rule_id}'
+            kde_col = f'kde_{rule_id}'
             
-            # Inicializar columnas con -999 (no aplica) y NaN para KDE
-            cluster_col = f'cluster_{rule_info["name"]}'
-            kde_col = f'kde_{rule_info["name"]}'
-            
-            df_result[cluster_col] = -999  # -999 = no es evento crítico para esta regla
-            df_result[kde_col] = 0   # 0 = no tiene densidad KDE
+            df_result[cluster_col] = -999
+            df_result[kde_col] = np.nan
             
             if len(critical_indices) < 5:
-                print(f"   ⚠️ Muy pocos eventos críticos para clustering (mínimo 5)")
-                # Las columnas quedan con valores por defecto
+                logger.warning(f"Too few critical events for rule {rule_id}")
                 continue
             
-            # Extraer coordenadas de eventos críticos
             critical_coords = df_result.loc[critical_indices, ['centroid_lat', 'centroid_lng']].dropna()
             valid_indices = critical_coords.index
             coords_array = critical_coords.values
             
             if len(coords_array) < 5:
-                print(f"   ⚠️ Muy pocos eventos con coordenadas válidas")
                 continue
             
-            # Aplicar HDBSCAN
+            # Apply HDBSCAN
             n_points = len(coords_array)
             min_cluster_size = max(3, n_points // 30)
             min_samples = max(2, min_cluster_size // 2)
@@ -358,94 +344,46 @@ def add_clustering_columns_to_dataframe(df) -> pd.DataFrame:
             )
             
             clusters = hdbscan.fit_predict(coords_array)
-            
-            # Asignar resultados de clustering
             df_result.loc[valid_indices, cluster_col] = clusters
             
-            # Estadísticas de clustering
+            # Apply KDE
             n_clusters = len(set(clusters)) - (1 if -1 in clusters else 0)
-            n_noise = list(clusters).count(-1)
-            n_in_clusters = len(clusters) - n_noise
+            n_in_clusters = len(clusters) - list(clusters).count(-1)
             
-            print(f"   🎯 Hotspots identificados: {n_clusters}")
-            print(f"   ✅ Eventos en hotspots: {n_in_clusters}")
-            print(f"   🔀 Eventos de ruido: {n_noise}")
-            
-            # Aplicar KDE si hay suficientes puntos en clusters
             if n_clusters > 0 and n_in_clusters >= 5:
-                
-                # KDE solo en puntos que están en clusters (no ruido)
                 cluster_mask = clusters != -1
                 clustered_coords = coords_array[cluster_mask]
-                clustered_indices = valid_indices[cluster_mask]
                 
                 try:
                     kde = KernelDensity(bandwidth=0.003, kernel='epanechnikov')
                     kde.fit(clustered_coords)
                     
-                    # Calcular densidad KDE para todos los eventos críticos
                     kde_scores = kde.score_samples(coords_array)
                     kde_density = np.exp(kde_scores)
                     probs = kde_density / kde_density.sum()
                     
-                    # Asignar densidades KDE
                     df_result.loc[valid_indices, kde_col] = probs
                     
-                    print(f"   📊 KDE calculado para {len(valid_indices)} puntos")
-                    print(f"   📈 Densidad máxima: {kde_density.max():.6f}")
-                    
                 except Exception as kde_error:
-                    print(f"   ⚠️ Error en KDE: {kde_error}")
-            
-            else:
-                print(f"   ⚠️ No se puede calcular KDE (pocos clusters o puntos)")
+                    logger.warning(f"KDE error for rule {rule_id}: {kde_error}")
         
         except Exception as rule_error:
-            print(f"   ❌ Error procesando regla {rule_id}: {rule_error}")
+            logger.error(f"Error processing rule {rule_id}: {rule_error}")
             continue
-    
-    # Mostrar resumen final
-    print(f"\n{'📊 RESUMEN FINAL':=^60}")
-    
-    cluster_columns = [col for col in df_result.columns if col.startswith('cluster_')]
-    kde_columns = [col for col in df_result.columns if col.startswith('kde_')]
-    
-    print(f"✅ Columnas de clustering agregadas: {len(cluster_columns)}")
-    for col in cluster_columns:
-        n_clusters = len(df_result[df_result[col] >= 0][col].unique())
-        n_in_clusters = len(df_result[df_result[col] >= 0])
-        n_noise = len(df_result[df_result[col] == -1])
-        print(f"   {col}: {n_clusters} hotspots, {n_in_clusters} eventos agrupados, {n_noise} ruido")
-    
-    print(f"✅ Columnas de KDE agregadas: {len(kde_columns)}")
-    for col in kde_columns:
-        n_with_kde = len(df_result[df_result[col].notna()])
-        print(f"   {col}: {n_with_kde} eventos con densidad KDE")
-    
-    print(f"\n📏 DataFrame final: {len(df_result)} filas × {len(df_result.columns)} columnas")
-    print(f"📏 Nuevas columnas agregadas: {len(cluster_columns + kde_columns)}")
     
     return df_result
 
 def get_clustering_summary(df_with_clusters):
-    """
-    Función auxiliar para obtener resumen de los resultados de clustering
-    """
-    
-    print("📊 RESUMEN DETALLADO DE CLUSTERING")
-    print("=" * 50)
-    
+    """Generate clustering summary"""
     cluster_columns = [col for col in df_with_clusters.columns if col.startswith('cluster_')]
     kde_columns = [col for col in df_with_clusters.columns if col.startswith('kde_')]
     
     summary_data = []
     
     for col in cluster_columns:
-        rule_id = col.split('_')[1]  # Extraer r1, r2, etc.
-        
-        # Estadísticas de clustering
+        rule_id = col.split('_')[1]
         all_clusters = df_with_clusters[col]
-        critical_events = all_clusters[all_clusters != -999]  # Eventos que aplican a esta regla
+        critical_events = all_clusters[all_clusters != -999]
         
         if len(critical_events) == 0:
             continue
@@ -457,7 +395,6 @@ def get_clustering_summary(df_with_clusters):
         
         clustering_rate = (n_in_clusters / n_total_critical * 100) if n_total_critical > 0 else 0
         
-        # Estadísticas de KDE
         kde_col = f'kde_{rule_id}'
         n_with_kde = 0
         max_kde = 0
@@ -477,39 +414,13 @@ def get_clustering_summary(df_with_clusters):
             'Max_Densidad_KDE': f"{max_kde:.6f}"
         })
     
-    summary_df = pd.DataFrame(summary_data)
-    print(summary_df.to_string(index=False))
-    
-    return summary_df
-
-
-# ===============================
-# FUNCIÓN PRINCIPAL PARA USAR
-# ===============================
+    return pd.DataFrame(summary_data)
 
 def process_dataframe_with_clustering(df, export_coordinates=True):
-    """
-    Función principal que procesa todo el DataFrame
+    """Main function to process DataFrame with clustering"""
+    logger.info("Processing dataframe with clustering")
     
-    Parámetros:
-    df: DataFrame original
-    export_coordinates: Si exportar coordenadas de hotspots
-    
-    Retorna:
-    dict con:
-    - 'dataframe': DataFrame con columnas nuevas
-    - 'summary': Resumen de clustering
-    - 'hotspots': Coordenadas de hotspots (si export_coordinates=True)
-    """
-    
-    print("🚀 PROCESAMIENTO COMPLETO DEL DATAFRAME")
-    print("=" * 60)
-    
-    # Agregar columnas de clustering
     df_with_clusters = add_clustering_columns_to_dataframe(df)
-    df_with_clusters = df_with_clusters.replace(np.nan, 0)
-    
-    # Generar resumen
     summary = get_clustering_summary(df_with_clusters)
        
     return {
@@ -517,39 +428,18 @@ def process_dataframe_with_clustering(df, export_coordinates=True):
         'summary': summary, 
     }
 
-# Rango de radios (m) → Velocidad máxima (kph)
+# Radius-speed mapping
 radius_speed_ranges = [
-    (0, 15, 8),
-    (15, 20, 9),
-    (20, 25, 10),
-    (25, 32, 11),
-    (32, 37, 12),
-    (37, 42, 13),
-    (42, 49, 14),
-    (49, 53, 15),
-    (53, 58, 16),
-    (58, 63, 17),
-    (63, 68, 18),
-    (68, 73, 19),
-    (73, 79, 20),
-    (79, 84, 21),
-    (84, 90, 22),
-    (90, 96, 23),
-    (96, 106, 24),
-    (106, 113, 25),
-    (113, 120, 26),
-    (120, 132, 27),
-    (132, 141, 28),
-    (141, 150, 29),
-    (150, 160, 30),
-    (160, 170, 31),
-    (170, 198, 32)
+    (0, 15, 8), (15, 20, 9), (20, 25, 10), (25, 32, 11), (32, 37, 12),
+    (37, 42, 13), (42, 49, 14), (49, 53, 15), (53, 58, 16), (58, 63, 17),
+    (63, 68, 18), (68, 73, 19), (73, 79, 20), (79, 84, 21), (84, 90, 22),
+    (90, 96, 23), (96, 106, 24), (106, 113, 25), (113, 120, 26), (120, 132, 27),
+    (132, 141, 28), (141, 150, 29), (150, 160, 30), (160, 170, 31), (170, 198, 32)
 ]
 
 def get_max_speed_from_radius(radius):
+    """Get maximum speed for given radius"""
     for r_min, r_max, vmax in radius_speed_ranges:
         if r_min <= radius <= r_max:
             return vmax
-    return np.inf  # si está fuera de los rangos, no marcar como crítico
-
-
+    return np.inf

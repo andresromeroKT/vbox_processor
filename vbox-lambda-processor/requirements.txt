@@ -1,0 +1,16 @@
+# Core dependencies
+pandas
+numpy
+
+# Database connectivity
+mysql-connector-python
+
+# Scientific computing 
+scikit-learn
+h3
+
+# AWS SDK (ya incluido en base image pero especificamos versión)
+boto3
+
+# Environment management para desarrollo local
+python-dotenv
